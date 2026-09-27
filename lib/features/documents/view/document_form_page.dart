@@ -195,7 +195,11 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
     }
     final file = await ImagePicker().pickImage(
       source: choice == 'camera' ? ImageSource.camera : ImageSource.gallery,
-      imageQuality: 90,
+      // Resized natively by the picker: decoding a full-size photo in Dart is
+      // the slowest part of scanning.
+      maxWidth: kScanWorkingSide.toDouble(),
+      maxHeight: kScanWorkingSide.toDouble(),
+      imageQuality: 95,
     );
     if (file != null && mounted) await _scanAndAttach(file.path);
   }

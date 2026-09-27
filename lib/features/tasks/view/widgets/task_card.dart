@@ -22,9 +22,9 @@ class TaskCard extends ConsumerWidget {
 
   Future<void> _open(BuildContext context, WidgetRef ref) async {
     if (!task.hasAttachment) return;
-    final url = await ref.read(taskAttachmentUrlProvider(task.attachmentPath).future);
+    final url = await ref.read(tasksServiceProvider).attachmentUrl(task.attachmentPath);
     if (url == null || !context.mounted) return;
-    await showNetworkImageViewer(context, url, heroTag: _heroTag);
+    await showNetworkImageViewer(context, url, heroTag: _heroTag, cacheKey: task.attachmentPath);
   }
 
   @override

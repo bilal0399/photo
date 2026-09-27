@@ -106,7 +106,14 @@ class _TaskFormPageState extends ConsumerState<TaskFormPage> {
       ),
     );
     if (source == null) return;
-    final file = await ImagePicker().pickImage(source: source, imageQuality: 90);
+    final file = await ImagePicker().pickImage(
+      source: source,
+      // Resized natively by the picker: decoding a full-size photo in Dart is
+      // the slowest part of scanning.
+      maxWidth: kScanWorkingSide.toDouble(),
+      maxHeight: kScanWorkingSide.toDouble(),
+      imageQuality: 95,
+    );
     if (file != null && mounted) await _scanAndAttach(file.path);
   }
 

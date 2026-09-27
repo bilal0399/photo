@@ -30,6 +30,9 @@ class TaskImage extends ConsumerWidget {
               ? placeholder(Icons.broken_image_outlined)
               : CachedNetworkImage(
                   imageUrl: url,
+                  // Signed URLs change on every refresh; the path keeps the
+                  // on-disk copy valid across them.
+                  cacheKey: path,
                   fit: fit,
                   width: double.infinity,
                   placeholder: (_, _) => const Center(

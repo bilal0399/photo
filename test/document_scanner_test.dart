@@ -65,12 +65,7 @@ void main() {
     ];
     final prep = await prepareScan(_fakePhoto(temp, sheet).path);
 
-    final output = await renderScan(ScanRequest(
-      bytes: prep!.bytes,
-      quad: prep.quad,
-      filterIndex: ScanFilter.blackWhite.index,
-      quarterTurns: 1,
-    ));
+    final output = await renderScan(prep!.request(filter: ScanFilter.blackWhite, quarterTurns: 1));
 
     expect(output.extension, '.png');
     final result = img.decodeImage(output.bytes)!;
@@ -83,7 +78,53 @@ void main() {
     expect(values, {0, 255});
   });
 
-  testWidgets('preview page goes from corner adjustment to the scanned result', (tester) async {
+  test('one-shot scan crops and enhances without any interaction', () async {
+    final sheet = [
+      img.Point(150, 160),
+      img.Point(760, 110),
+      img.Point(800, 1080),
+      img.Point(120, 1030),
+    ];
+    final bytes = _fakePhoto(temp, sheet).readAsBytesSync();
+
+    final scan = await scanBytes(bytes);
+
+    expect(scan, isNotNull);
+    expect(scan!.autoDetected, isTrue);
+    expect(scan.output.extension, '.jpg');
+    final result = img.decodeImage(scan.output.bytes)!;
+    // Cropped to the sheet: smaller than the photo, still portrait.
+    expect(result.width, lessThan(900));
+    expect(result.height, greaterThan(result.width));
+    // The desk is gone and the paper was pushed towards white.
+    expect(result.getPixel(6, 6).r, greaterThan(230));
+  });
+
+  test('one-shot scan keeps the whole frame when no sheet stands out', () async {
+    final flat = img.Image(width: 600, height: 800, numChannels: 3);
+    img.fill(flat, color: img.ColorRgb8(210, 210, 210));
+
+    final scan = await scanBytes(img.encodeJpg(flat), filter: ScanFilter.grayscale);
+
+    expect(scan!.autoDetected, isFalse);
+    final result = img.decodeImage(scan.output.bytes)!;
+    expect(result.width, 600);
+    expect(result.height, 800);
+  });
+
+  test('photos larger than the working size are scaled down', () async {
+    final photo = img.Image(width: 4000, height: 3000, numChannels: 3);
+    img.fill(photo, color: img.ColorRgb8(120, 120, 120));
+    final file = File('${temp.path}/big.jpg')..writeAsBytesSync(img.encodeJpg(photo));
+
+    final prep = await prepareScan(file.path);
+
+    expect(prep!.width, kScanWorkingSide);
+    expect(prep.height, 1500);
+    expect(prep.pixels.length, prep.width * prep.height * 3);
+  });
+
+  testWidgets('preview opens on the automatic scan and can go back to the corners', (tester) async {
     final photo = _fakePhoto(temp, [
       img.Point(150, 160),
       img.Point(760, 110),
@@ -101,6 +142,13 @@ void main() {
     });
     await tester.pump();
 
+    // A detected sheet skips straight to the cropped, enhanced result.
+    expect(find.text('معاينة قبل الإدراج'), findsOneWidget);
+    expect(find.text('تم اقتصاص الورقة وتحسينها تلقائياً'), findsOneWidget);
+    expect(find.text('إدراج الصورة'), findsOneWidget);
+
+    await tester.tap(find.text('تعديل الاقتصاص'));
+    await tester.pump();
     expect(find.text('تحديد حواف الورقة'), findsOneWidget);
     expect(find.text('تم كشف حواف الورقة تلقائياً، اسحب النقاط لضبط الاقتصاص'), findsOneWidget);
 
@@ -119,5 +167,25 @@ void main() {
     expect(find.text('معاينة قبل الإدراج'), findsOneWidget);
     expect(find.text('إدراج الصورة'), findsOneWidget);
     expect(find.text(ScanFilter.blackWhite.label), findsOneWidget);
+    // The notice only describes the untouched automatic result.
+    expect(find.text('تم اقتصاص الورقة وتحسينها تلقائياً'), findsNothing);
+  });
+
+  testWidgets('preview stays on the corners when no sheet is detected', (tester) async {
+    final flat = img.Image(width: 600, height: 800, numChannels: 3);
+    img.fill(flat, color: img.ColorRgb8(210, 210, 210));
+    final file = File('${temp.path}/flat.jpg')..writeAsBytesSync(img.encodeJpg(flat));
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(MaterialApp(
+        locale: const Locale('ar'),
+        home: ScanPreviewPage(sourcePath: file.path),
+      ));
+      await Future<void>.delayed(const Duration(seconds: 2));
+    });
+    await tester.pump();
+
+    expect(find.text('تحديد حواف الورقة'), findsOneWidget);
+    expect(find.text('لم يتم كشف الحواف بوضوح، اسحب النقاط لتحديد الورقة'), findsOneWidget);
   });
 }

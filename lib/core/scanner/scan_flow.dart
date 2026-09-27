@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
+import 'document_scanner.dart';
 import 'scan_preview_page.dart';
 
-const _scannableExtensions = {'.png', '.jpg', '.jpeg'};
-
-bool isScannable(String path) => _scannableExtensions.contains(p.extension(path).toLowerCase());
+export 'document_scanner.dart' show isScannable, kScanWorkingSide;
 
 /// Sends a freshly picked image through the scanner preview (edge detection,
 /// crop adjustment and enhancement) before it is attached.

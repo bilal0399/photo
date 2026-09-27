@@ -1,7 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -46,6 +47,16 @@ class SupabaseTasksService implements TasksService {
     return object;
   }
 
+  /// Best-effort removal of a storage object that no record points at.
+  Future<void> _removeObject(String path) async {
+    if (path.isEmpty) return;
+    try {
+      await _client.storage.from(_bucket).remove([path]);
+    } catch (e) {
+      debugPrint('Could not remove attachment $path: $e');
+    }
+  }
+
   @override
   Future<List<Task>> all() async {
     final rows = await _client.from('tasks').select().order('created_at', ascending: false);
@@ -58,43 +69,52 @@ class SupabaseTasksService implements TasksService {
     if (sourceImagePath != null && sourceImagePath.isNotEmpty) {
       attachment = await _upload(sourceImagePath);
     }
-    await _client.from('tasks').insert({
-      'task_number': taskNumber,
-      'entity': entity,
-      'attachment_path': attachment,
-    });
+    try {
+      await _client.from('tasks').insert({
+        'task_number': taskNumber,
+        'entity': entity,
+        'attachment_path': attachment,
+      });
+    } catch (_) {
+      await _removeObject(attachment); // don't leave an orphaned upload behind
+      rethrow;
+    }
   }
 
   @override
   Future<void> edit(Task task,
       {required String taskNumber, required String entity, String? newSourceImagePath}) async {
-    var attachment = task.attachmentPath;
+    final previous = task.attachmentPath;
+    var attachment = previous;
     if (newSourceImagePath != null && newSourceImagePath.isNotEmpty) {
       attachment = await _upload(newSourceImagePath);
     }
-    await _client.from('tasks').update({
-      'task_number': taskNumber,
-      'entity': entity,
-      'attachment_path': attachment,
-      'updated_at': DateTime.now().toIso8601String(),
-    }).eq('id', task.id!);
+    try {
+      await _client.from('tasks').update({
+        'task_number': taskNumber,
+        'entity': entity,
+        'attachment_path': attachment,
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', task.id!);
+    } catch (_) {
+      if (attachment != previous) await _removeObject(attachment);
+      rethrow;
+    }
+    // Only drop the old object once the record points at the new one.
+    if (attachment != previous) await _removeObject(previous);
   }
 
   @override
   Future<void> remove(Task task, {required bool deleteFile}) async {
     await _client.from('tasks').delete().eq('id', task.id!);
-    if (deleteFile && task.attachmentPath.isNotEmpty) {
-      try {
-        await _client.storage.from(_bucket).remove([task.attachmentPath]);
-      } catch (_) {}
-    }
+    if (deleteFile) await _removeObject(task.attachmentPath);
   }
 
   @override
   Future<String?> attachmentUrl(String path) async {
     if (path.isEmpty) return null;
     try {
-      return await _client.storage.from(_bucket).createSignedUrl(path, 3600);
+      return await _client.storage.from(_bucket).createSignedUrl(path, _signedUrlLifetime.inSeconds);
     } catch (_) {
       return null;
     }
@@ -123,12 +143,16 @@ class CachedTasksService implements TasksService {
     try {
       final tasks = await remote.all();
       final db = await _db.database;
-      await db.delete('tasks');
-      final batch = db.batch();
-      for (final t in tasks) {
-        batch.insert('tasks', t.toCache());
-      }
-      await batch.commit(noResult: true);
+      // One transaction: a failure mid-way keeps the previous cache intact
+      // instead of leaving it empty.
+      await db.transaction((txn) async {
+        await txn.delete('tasks');
+        final batch = txn.batch();
+        for (final t in tasks) {
+          batch.insert('tasks', t.toCache());
+        }
+        await batch.commit(noResult: true);
+      });
       return tasks;
     } catch (_) {
       final db = await _db.database;
@@ -164,7 +188,15 @@ final tasksServiceProvider = Provider<TasksService>(
   ),
 );
 
-/// Signed URL for a task attachment, cached by Riverpod (valid ~1h).
-final taskAttachmentUrlProvider = FutureProvider.family<String?, String>(
-  (ref, path) => ref.watch(tasksServiceProvider).attachmentUrl(path),
-);
+/// Signed URLs are issued for this long by [SupabaseTasksService].
+const _signedUrlLifetime = Duration(hours: 1);
+
+/// Signed URL for a task attachment.
+///
+/// Dropped once no widget shows it, and re-issued a few minutes before it
+/// expires so an image that stays on screen never turns into a broken link.
+final taskAttachmentUrlProvider = FutureProvider.autoDispose.family<String?, String>((ref, path) {
+  final refresh = Timer(_signedUrlLifetime - const Duration(minutes: 5), ref.invalidateSelf);
+  ref.onDispose(refresh.cancel);
+  return ref.watch(tasksServiceProvider).attachmentUrl(path);
+});

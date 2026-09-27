@@ -33,6 +33,9 @@ class _FakeDocumentsService implements DocumentsService {
   /// Storage path -> bytes, or null to simulate a failed download.
   final Map<String, Uint8List?> files;
   final replaced = <String, String>{};
+
+  /// What was uploaded for each document (the temp file is cleaned up after).
+  final uploaded = <String, Uint8List>{};
   final deleteFlags = <String, bool>{};
 
   @override
@@ -42,6 +45,7 @@ class _FakeDocumentsService implements DocumentsService {
   Future<String> replaceAttachment(Document doc, String localPath,
       {bool deleteOriginal = true}) async {
     replaced[doc.id!] = localPath;
+    uploaded[doc.id!] = await File(localPath).readAsBytes();
     deleteFlags[doc.id!] = deleteOriginal;
     return '${kScannedPrefix}new${p.extension(localPath)}';
   }
@@ -120,13 +124,17 @@ void main() {
     );
 
     expect(reports.map((r) => r.outcome), [RescanOutcome.cropped, RescanOutcome.cropped]);
-    expect(remote.replaced.keys, ['11', '12']);
+    // Two run at once, so uploads may finish in either order.
+    expect(remote.replaced.keys.toSet(), {'11', '12'});
     expect(remote.deleteFlags.values, everyElement(isTrue));
     expect(progress.last, 2);
 
     // The uploaded file is a real, cropped image.
-    final processed = img.decodeImage(File(remote.replaced['11']!).readAsBytesSync())!;
+    final processed = img.decodeImage(remote.uploaded['11']!)!;
     expect(processed.width, lessThan(900));
+
+    // Temp copies are removed once uploaded.
+    expect(File(remote.replaced['11']!).existsSync(), isFalse);
 
     // Originals are kept on disk before the cloud copy is dropped.
     final backups = (await service.backupDirectory()).listSync().map((f) => p.basename(f.path));
@@ -163,9 +171,40 @@ void main() {
       backupOriginals: false,
       isCancelled: () => remote.replaced.isNotEmpty,
       onProgress: (_, _, _) {},
+      concurrency: 1,
     );
 
     expect(reports, hasLength(1));
     expect(remote.replaced.keys, ['31']);
+  });
+
+  test('works on several documents at once and reports them in order', () async {
+    final bytes = _photoBytes();
+    final ids = ['41', '42', '43', '44', '45'];
+    final remote = _FakeDocumentsService({
+      for (final id in ids) 'documents/$id.jpg': id == '43' ? null : bytes,
+    });
+    final service = BulkRescanService(remote);
+    final progress = <int>[];
+
+    final reports = await service.run(
+      documents: [for (final id in ids) _doc(id, 'documents/$id.jpg')],
+      filter: ScanFilter.auto,
+      backupOriginals: false,
+      isCancelled: () => false,
+      onProgress: (done, _, _) => progress.add(done),
+      concurrency: 3,
+    );
+
+    expect(reports.map((r) => r.document.id), ids);
+    expect(reports.map((r) => r.outcome), [
+      RescanOutcome.cropped,
+      RescanOutcome.cropped,
+      RescanOutcome.failed,
+      RescanOutcome.cropped,
+      RescanOutcome.cropped,
+    ]);
+    expect(remote.replaced.keys.toSet(), {'41', '42', '44', '45'});
+    expect(progress.last, ids.length);
   });
 }
