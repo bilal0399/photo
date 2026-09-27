@@ -1,17 +1,26 @@
-# diwan_archive
+# ديوان الفرقة 42
 
-A new Flutter project.
+أرشيف الطلبات والمهمات: تطبيق Flutter (Android و Windows) مع لوحة إدارة على الويب، وكلاهما يعمل على Supabase.
 
-## Getting Started
+| المجلد | المحتوى |
+|---|---|
+| `lib/` | التطبيق (Flutter + Riverpod + go_router) |
+| `dashboard/` | لوحة الإدارة على الويب، للمدير فقط. انظر [dashboard/README.md](dashboard/README.md) |
+| `supabase/` | دالة إدارة الحسابات وملف الصلاحيات |
+| `test/` | اختبارات التطبيق |
 
-This project is a starting point for a Flutter application.
+## أهم الميزات
 
-A few resources to get you started if this is your first Flutter project:
+- ماسح مستندات مدمج: يقتص الورقة ويعدّل الإضاءة ويحسّن التباين والحدة تلقائياً قبل الحفظ.
+- إدخال سريع: حفظ وإضافة طلب آخر مع الإبقاء على التاريخ والنوع والجهة (`Ctrl+Enter`)، وتنبيه عند تكرار رقم الكتاب.
+- إرفاق صور جماعي حسب اسم الملف (من التطبيق ومن اللوحة)، ومعالجة الصور القديمة دفعة واحدة.
+- نسخة احتياطية كاملة (Excel مع كل الصور) من التطبيق أو اللوحة.
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## التطوير
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter pub get
+flutter analyze
+flutter test
+node --test dashboard/tests/*.test.js
+```
