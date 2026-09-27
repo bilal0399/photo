@@ -27,15 +27,15 @@ bool isScannable(String path) => _scannableExtensions.contains(p.extension(path)
 ///
 /// Pickers that can resize natively (camera / gallery) should ask for this
 /// size up front: decoding a full 12MP photo in Dart is the slowest step.
-const kScanWorkingSide = 2000;
+const kScanWorkingSide = 2400;
 
 /// Longest side of the produced scan.
-const _maxOutputSide = 2000;
+const _maxOutputSide = 2400;
 
 /// Longest side used while looking for the paper edges.
 const _detectSide = 420;
 
-const _jpegQuality = 85;
+const _jpegQuality = 90;
 
 const fullFrameQuad = <double>[0, 0, 1, 0, 1, 1, 0, 1];
 
@@ -506,14 +506,15 @@ ScanOutput _render(ScanRequest request) {
     case ScanFilter.original:
       break;
     case ScanFilter.auto:
-      _autoLevels(pixels, _luma(pixels, outWidth * outHeight));
+      _enhanceDocument(pixels, outWidth, outHeight, 3);
     case ScanFilter.grayscale:
-      final lum = _luma(pixels, outWidth * outHeight);
-      _autoLevels(lum, lum);
-      pixels = lum;
+      pixels = _luma(pixels, outWidth * outHeight);
       channels = 1;
+      _enhanceDocument(pixels, outWidth, outHeight, 1);
     case ScanFilter.blackWhite:
-      pixels = _adaptiveThreshold(_luma(pixels, outWidth * outHeight), outWidth, outHeight);
+      final lum = _luma(pixels, outWidth * outHeight);
+      _flattenLighting(lum, lum, outWidth, outHeight, 1);
+      pixels = _adaptiveThreshold(lum, outWidth, outHeight);
       channels = 1;
   }
 
@@ -600,30 +601,156 @@ Uint8List _warp(Uint8List src, int w, int h, List<double> c, int ow, int oh) {
   return out;
 }
 
-/// Stretches the tonal range so paper turns white and ink turns dark.
-/// [lum] is the luminance used for the histogram; [pixels] is updated in place.
-void _autoLevels(Uint8List pixels, Uint8List lum) {
+/// Document enhancement: evens out the lighting, turns the paper white, makes
+/// the ink darker and crisper. [pixels] ([channels] = 1 or 3) is updated in
+/// place.
+void _enhanceDocument(Uint8List pixels, int w, int h, int channels) {
+  final lum = channels == 3 ? _luma(pixels, w * h) : Uint8List.fromList(pixels);
+  if (!_flattenLighting(pixels, lum, w, h, channels)) return;
+
+  // Contrast: everything close to paper becomes pure white, the darkest ink
+  // becomes black, and a gamma > 1 thickens faint strokes.
+  final normalised = channels == 3 ? _luma(pixels, w * h) : pixels;
   final histogram = Int32List(256);
-  for (final v in lum) {
+  for (final v in normalised) {
     histogram[v]++;
   }
-  final total = lum.length;
-  var low = _percentile(histogram, total, 0.02);
-  final high = _percentile(histogram, total, 0.985);
-  if (high < 64) return; // too dark to be paper, nothing sensible to stretch
-  // A mostly blank page has so little ink that even the dark percentile is
-  // paper; still whiten the paper instead of leaving it grey.
-  low = math.min(low, high - 128).clamp(0, 255);
-
+  final black = math.min(_percentile(histogram, normalised.length, 0.005), 110);
+  const white = 232;
   final lut = Uint8List(256);
-  const strength = 0.4;
   for (var v = 0; v < 256; v++) {
-    final t = ((v - low) / (high - low)).clamp(0.0, 1.0);
+    final t = ((v - black) / (white - black)).clamp(0.0, 1.0);
     final curved = t * t * (3 - 2 * t);
-    lut[v] = ((t * (1 - strength) + curved * strength) * 255).round().clamp(0, 255);
+    lut[v] = (math.pow(t * 0.5 + curved * 0.5, 1.35) * 255).round().clamp(0, 255);
   }
   for (var i = 0; i < pixels.length; i++) {
     pixels[i] = lut[pixels[i]];
+  }
+
+  _sharpen(pixels, w, h, channels, 0.8);
+}
+
+/// Divides out the paper's own shading (shadows, a darker corner, yellowed
+/// paper) so the page reads as evenly lit. Uses [lum] to estimate the paper
+/// and scales [pixels] by it. Returns false when the image has no paper-like
+/// background to work with.
+bool _flattenLighting(Uint8List pixels, Uint8List lum, int w, int h, int channels) {
+  // Paper estimate on a coarse grid: shrink, then a max filter wipes out the
+  // text strokes, and a blur smooths the result.
+  final factor = math.max(1, (math.max(w, h) / 160).round());
+  final sw = math.max(1, w ~/ factor);
+  final sh = math.max(1, h ~/ factor);
+  var grid = _shrink(lum, w, h, 1, sw, sh);
+  for (var i = 0; i < 3; i++) {
+    grid = _maxFilter(grid, sw, sh);
+  }
+  grid = _boxBlur(grid, sw, sh, 2);
+
+  final histogram = Int32List(256);
+  for (final v in grid) {
+    histogram[v]++;
+  }
+  final paper = _percentile(histogram, grid.length, 0.9);
+  if (paper < 64) return false; // too dark to be paper
+  // Large dark areas (stamps, photos, black headers) are not shading: never
+  // lift a region by more than it takes to bring 60% paper up to white.
+  final floor = paper * 0.6;
+
+  final gains = Float64List(sw * sh);
+  for (var i = 0; i < gains.length; i++) {
+    gains[i] = 255 / math.max(grid[i].toDouble(), floor);
+  }
+
+  final xs = Float64List(w);
+  for (var x = 0; x < w; x++) {
+    xs[x] = ((x + 0.5) / factor - 0.5).clamp(0.0, sw - 1.0);
+  }
+  var o = 0;
+  for (var y = 0; y < h; y++) {
+    final gy = ((y + 0.5) / factor - 0.5).clamp(0.0, sh - 1.0);
+    final y0 = gy.toInt();
+    final y1 = math.min(y0 + 1, sh - 1);
+    final ty = gy - y0;
+    for (var x = 0; x < w; x++) {
+      final gx = xs[x];
+      final x0 = gx.toInt();
+      final x1 = math.min(x0 + 1, sw - 1);
+      final tx = gx - x0;
+      final top = gains[y0 * sw + x0] * (1 - tx) + gains[y0 * sw + x1] * tx;
+      final bottom = gains[y1 * sw + x0] * (1 - tx) + gains[y1 * sw + x1] * tx;
+      final gain = top * (1 - ty) + bottom * ty;
+      for (var c = 0; c < channels; c++) {
+        final v = pixels[o] * gain;
+        pixels[o++] = v >= 255 ? 255 : v.toInt();
+      }
+    }
+  }
+  return true;
+}
+
+/// 3x3 max filter on a single channel buffer.
+Uint8List _maxFilter(Uint8List src, int w, int h) {
+  final out = Uint8List(src.length);
+  for (var y = 0; y < h; y++) {
+    final y0 = math.max(0, y - 1);
+    final y1 = math.min(h - 1, y + 1);
+    for (var x = 0; x < w; x++) {
+      final x0 = math.max(0, x - 1);
+      final x1 = math.min(w - 1, x + 1);
+      var m = 0;
+      for (var yy = y0; yy <= y1; yy++) {
+        for (var xx = x0; xx <= x1; xx++) {
+          final v = src[yy * w + xx];
+          if (v > m) m = v;
+        }
+      }
+      out[y * w + x] = m;
+    }
+  }
+  return out;
+}
+
+/// Box blur of a single channel buffer (edges clamped).
+Uint8List _boxBlur(Uint8List src, int w, int h, int radius) {
+  final tmp = Uint8List(src.length);
+  final out = Uint8List(src.length);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var sum = 0;
+      for (var k = -radius; k <= radius; k++) {
+        sum += src[y * w + (x + k).clamp(0, w - 1)];
+      }
+      tmp[y * w + x] = sum ~/ (2 * radius + 1);
+    }
+  }
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var sum = 0;
+      for (var k = -radius; k <= radius; k++) {
+        sum += tmp[(y + k).clamp(0, h - 1) * w + x];
+      }
+      out[y * w + x] = sum ~/ (2 * radius + 1);
+    }
+  }
+  return out;
+}
+
+/// Unsharp mask with a 3x3 box blur: crisper letter edges.
+void _sharpen(Uint8List pixels, int w, int h, int channels, double amount) {
+  final src = Uint8List.fromList(pixels);
+  final stride = w * channels;
+  for (var y = 1; y < h - 1; y++) {
+    for (var x = 1; x < w - 1; x++) {
+      final base = y * stride + x * channels;
+      for (var c = 0; c < channels; c++) {
+        final i = base + c;
+        final sum = src[i - stride - channels] + src[i - stride] + src[i - stride + channels] +
+            src[i - channels] + src[i] + src[i + channels] +
+            src[i + stride - channels] + src[i + stride] + src[i + stride + channels];
+        final v = src[i] + amount * (src[i] - sum / 9);
+        pixels[i] = v <= 0 ? 0 : (v >= 255 ? 255 : v.round());
+      }
+    }
   }
 }
 

@@ -120,7 +120,7 @@ void main() {
     final prep = await prepareScan(file.path);
 
     expect(prep!.width, kScanWorkingSide);
-    expect(prep.height, 1500);
+    expect(prep.height, (3000 * kScanWorkingSide / 4000).round());
     expect(prep.pixels.length, prep.width * prep.height * 3);
   });
 
