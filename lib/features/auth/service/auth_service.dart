@@ -49,6 +49,29 @@ class SupabaseAuthService implements AuthService {
     required String password,
     required String role,
   }) async {
+    // Preferred path: the `admin-users` Edge Function creates the account with
+    // the service key on the server, after checking that the caller is admin.
+    // It works with public sign-ups disabled, which keeps strangers out.
+    try {
+      await _client.functions.invoke('admin-users', body: {
+        'action': 'create',
+        'username': fullName.trim(),
+        'email': email.trim(),
+        'password': password,
+        'role': role,
+      });
+      return;
+    } on FunctionException catch (e) {
+      // 404: the function is not deployed yet, fall back to a sign-up below.
+      if (e.status != 404) {
+        final details = e.details;
+        final message = details is Map && details['error'] is String
+            ? details['error'] as String
+            : (e.reasonPhrase ?? 'HTTP ${e.status}');
+        throw AuthException(message, statusCode: '${e.status}');
+      }
+    }
+
     // Use a throwaway client so signing the new user up does NOT replace the
     // admin's current session on the global client. The implicit flow avoids
     // the PKCE code-verifier storage that a bare client doesn't have.

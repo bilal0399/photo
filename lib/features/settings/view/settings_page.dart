@@ -11,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../../core/backup/cloud_backup_service.dart';
 import '../../auth/service/auth_service.dart';
 import '../../auth/view/add_user_dialog.dart';
+import '../../documents/view/bulk_attach_page.dart';
 import '../../documents/view/bulk_rescan_page.dart';
 import '../controller/theme_controller.dart';
 
@@ -168,6 +169,19 @@ class SettingsPage extends ConsumerWidget {
                       ),
                       icon: const Icon(Icons.document_scanner_outlined),
                       label: const Text('معالجة الصور القديمة'),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'إرفاق صور لطلبات بدون مرفق دفعة واحدة: كل صورة باسم رقم الكتاب '
+                      '(الصورة 7 تُرفق بالطلب رقم 7).',
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.tonalIcon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const BulkAttachPage()),
+                      ),
+                      icon: const Icon(Icons.collections_outlined),
+                      label: const Text('إرفاق صور جماعي'),
                     ),
                   ],
                 ),
