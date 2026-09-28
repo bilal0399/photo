@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
@@ -30,6 +31,7 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
   final _formKey = GlobalKey<FormState>();
   final _bookNumber = TextEditingController();
   final _summary = TextEditingController();
+  final _summaryFocus = FocusNode();
 
   final _day = TextEditingController();
   late int _year;
@@ -88,6 +90,7 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
   void dispose() {
     _bookNumber.dispose();
     _summary.dispose();
+    _summaryFocus.dispose();
     _day.dispose();
     super.dispose();
   }
@@ -135,16 +138,14 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
         ],
       );
 
+  /// A new document starts with the searchable lists empty, so typing in them
+  /// filters straight away instead of first having to clear a preset value.
   void _initSelections(List<String> bookTypes, List<String> entities) {
     if (_initialized) return;
     final doc = widget.document;
-    _bookType = doc != null && bookTypes.contains(doc.bookType)
-        ? doc.bookType
-        : (bookTypes.isNotEmpty ? bookTypes.first : null);
+    _bookType = doc != null && bookTypes.contains(doc.bookType) ? doc.bookType : null;
     // An edited document keeps its own party even if it left the option list.
-    _requester = doc != null && doc.requester.isNotEmpty
-        ? doc.requester
-        : (entities.isNotEmpty ? entities.first : null);
+    _requester = doc != null && doc.requester.isNotEmpty ? doc.requester : null;
     _initialized = true;
   }
 
@@ -153,9 +154,7 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
   void _changeDirection(String? value, List<String> nextEntities) {
     setState(() {
       _direction = value ?? kOutgoing;
-      if (_requester == null || !nextEntities.contains(_requester)) {
-        _requester = nextEntities.isNotEmpty ? nextEntities.first : null;
-      }
+      if (_requester != null && !nextEntities.contains(_requester)) _requester = null;
     });
   }
 
@@ -195,7 +194,11 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
     }
     final file = await ImagePicker().pickImage(
       source: choice == 'camera' ? ImageSource.camera : ImageSource.gallery,
-      imageQuality: 90,
+      // Resized natively by the picker: decoding a full-size photo in Dart is
+      // the slowest part of scanning.
+      maxWidth: kScanWorkingSide.toDouble(),
+      maxHeight: kScanWorkingSide.toDouble(),
+      imageQuality: 95,
     );
     if (file != null && mounted) await _scanAndAttach(file.path);
   }
@@ -213,12 +216,17 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
     if (attachment != null && mounted) setState(() => _pickedAttachment = attachment);
   }
 
-  Future<void> _save() async {
+  /// Saves the form. With [addAnother], a new document stays open for the
+  /// next entry instead of closing: the date, direction, type and party are
+  /// kept (batches usually share them) and the book number moves on.
+  Future<void> _save({bool addAnother = false}) async {
+    if (_saving) return;
     if (!_formKey.currentState!.validate()) return;
     if (_bookType == null || _requester == null) {
-      _snack('يرجى تعبئة النوع والجهة');
+      _snack('يرجى اختيار نوع الكتاب و${entityLabel(_direction)}');
       return;
     }
+    if (!await _confirmDuplicate()) return;
     setState(() => _saving = true);
     final draft = DocumentDraft(
       bookNumber: _bookNumber.text.trim(),
@@ -236,11 +244,61 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
       } else {
         await controller.create(draft, sourceAttachmentPath: _pickedAttachment);
       }
-      if (mounted) Navigator.of(context).pop();
+      if (!mounted) return;
+      if (addAnother && !widget.isEdit) {
+        _snack('تم حفظ الطلب ${draft.bookNumber}');
+        _summary.clear();
+        _bookNumber.clear();
+        setState(() {
+          _pickedAttachment = null;
+          _saving = false;
+        });
+        final next = await controller.nextBookNumber();
+        if (mounted && _bookNumber.text.isEmpty) _bookNumber.text = next;
+        _summaryFocus.requestFocus();
+      } else {
+        Navigator.of(context).pop();
+      }
     } catch (e) {
       setState(() => _saving = false);
       _snack('خطأ: $e');
     }
+  }
+
+  /// Warns before saving a book number that already exists for the same year
+  /// and direction (numbers restart each year and differ per direction).
+  Future<bool> _confirmDuplicate() async {
+    final number = _bookNumber.text.trim();
+    if (number.isEmpty) return true;
+    List<Document> docs;
+    try {
+      docs = await ref.read(documentsProvider.future);
+    } catch (_) {
+      return true; // offline with no cache: nothing to compare against
+    }
+    if (!mounted) return false;
+    final year = '$_year';
+    final clash = docs.where((d) =>
+        d.id != widget.document?.id &&
+        d.bookNumber == number &&
+        d.direction == _direction &&
+        d.datetime.startsWith(year));
+    if (clash.isEmpty) return true;
+    final other = clash.first;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('رقم مكرر'),
+        content: Text(
+          'يوجد كتاب $_direction برقم $number في سنة $year:\n«${other.summary}»\n\nهل تريد الحفظ على أي حال؟',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('رجوع')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('حفظ')),
+        ],
+      ),
+    );
+    return ok == true;
   }
 
   void _snack(String msg) {
@@ -275,7 +333,7 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
     final entities = entitiesFor(_direction);
     _initSelections(bookTypes, entities);
 
-    return Scaffold(
+    final page = Scaffold(
       appBar: AppBar(title: Text(widget.isEdit ? 'تعديل طلب' : 'إضافة طلب جديد')),
       body: Align(
         alignment: Alignment.topCenter,
@@ -323,6 +381,7 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
                 const SizedBox(height: 14),
                 TextFormField(
                   controller: _summary,
+                  focusNode: _summaryFocus,
                   minLines: 3,
                   maxLines: 6,
                   decoration: const InputDecoration(labelText: 'ملخص الكتاب', alignLabelWithHint: true),
@@ -340,11 +399,40 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
                       : const Icon(Icons.save_outlined),
                   label: Text(widget.isEdit ? 'حفظ التعديلات' : 'حفظ الطلب'),
                 ),
+                if (!widget.isEdit) ...[
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: _saving ? null : () => _save(addAnother: true),
+                    icon: const Icon(Icons.playlist_add),
+                    label: const Text('حفظ وإضافة طلب آخر'),
+                  ),
+                ],
+                if (!_isMobile) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    widget.isEdit
+                        ? 'اختصار: Ctrl+S للحفظ'
+                        : 'اختصارات: Ctrl+S للحفظ · Ctrl+Enter للحفظ وإضافة طلب آخر',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).hintColor),
+                  ),
+                ],
               ],
             ),
           ),
         ),
       ),
+    );
+
+    // Desktop entry is keyboard driven: Ctrl+S saves, Ctrl+Enter saves and
+    // opens a blank form for the next document.
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): () => _save(),
+        if (!widget.isEdit)
+          const SingleActivator(LogicalKeyboardKey.enter, control: true): () => _save(addAnother: true),
+      },
+      child: Focus(autofocus: true, child: page),
     );
   }
 

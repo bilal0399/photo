@@ -44,13 +44,16 @@ class CachedOptionsService implements OptionsService {
     try {
       final items = await remote.byCategory(category);
       final db = await _db.database;
-      await db.delete('options', where: 'category = ?', whereArgs: [category]);
-      final batch = db.batch();
       final now = DateTime.now().toIso8601String();
-      for (final it in items) {
-        batch.insert('options', {'category': category, 'value': it.value, 'created_at': now});
-      }
-      await batch.commit(noResult: true);
+      // One transaction: a failure mid-way keeps the previous values cached.
+      await db.transaction((txn) async {
+        await txn.delete('options', where: 'category = ?', whereArgs: [category]);
+        final batch = txn.batch();
+        for (final it in items) {
+          batch.insert('options', {'category': category, 'value': it.value, 'created_at': now});
+        }
+        await batch.commit(noResult: true);
+      });
       return items;
     } catch (_) {
       final db = await _db.database;

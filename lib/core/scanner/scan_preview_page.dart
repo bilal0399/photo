@@ -9,6 +9,8 @@ import 'document_scanner.dart';
 ///
 /// Step 1 lets the user fine tune the four document corners detected
 /// automatically; step 2 shows the rectified result with the scanner filters.
+/// When the sheet is detected, the page opens directly on step 2 with the
+/// automatic crop and enhancement applied, so archiving takes a single tap.
 /// Pops with the path of the processed file, or null when cancelled.
 class ScanPreviewPage extends StatefulWidget {
   const ScanPreviewPage({
@@ -53,16 +55,24 @@ class _ScanPreviewPageState extends State<ScanPreviewPage> {
 
   Future<void> _load() async {
     try {
-      final prep = await prepareScan(widget.sourcePath);
+      // Detection and the default enhancement run in one background pass, so a
+      // clearly detected sheet opens straight on the finished scan.
+      final prep = await prepareScan(widget.sourcePath, autoFilter: _filter);
       if (!mounted) return;
       if (prep == null) {
         setState(() => _error = 'تعذر قراءة الصورة');
         return;
       }
+      final initial = prep.initial;
       setState(() {
         _prep = prep;
         _detected = _toOffsets(prep.quad);
         _corners = List.of(_detected);
+        if (initial != null) {
+          _output = initial;
+          _result = initial.bytes;
+          _cropping = false;
+        }
       });
     } catch (e) {
       if (mounted) setState(() => _error = 'تعذر تجهيز الصورة: $e');
@@ -80,12 +90,7 @@ class _ScanPreviewPageState extends State<ScanPreviewPage> {
     if (prep == null) return;
     setState(() => _busy = true);
     try {
-      final output = await renderScan(ScanRequest(
-        bytes: prep.bytes,
-        quad: _quadValues,
-        filterIndex: _filter.index,
-        quarterTurns: _quarterTurns,
-      ));
+      final output = await renderScan(prep.request(quad: _quadValues, filter: _filter, quarterTurns: _quarterTurns));
       if (!mounted) return;
       setState(() {
         _output = output;
@@ -107,12 +112,7 @@ class _ScanPreviewPageState extends State<ScanPreviewPage> {
     try {
       // The preview already holds the current settings; only render if missing.
       final output = _output ??
-          await renderScan(ScanRequest(
-            bytes: prep.bytes,
-            quad: _quadValues,
-            filterIndex: _filter.index,
-            quarterTurns: _quarterTurns,
-          ));
+          await renderScan(prep.request(quad: _quadValues, filter: _filter, quarterTurns: _quarterTurns));
       final path = await writeScanToTemp(output);
       if (mounted) Navigator.of(context).pop(path);
     } catch (e) {
@@ -328,6 +328,15 @@ class _ScanPreviewPageState extends State<ScanPreviewPage> {
                 ],
               ),
             ] else ...[
+              if (prep.autoDetected && _output == prep.initial)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'تم اقتصاص الورقة وتحسينها تلقائياً',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(

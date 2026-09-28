@@ -18,9 +18,16 @@ Future<void> showImageViewer(BuildContext context, String path, {Object? heroTag
 }
 
 /// Full-screen viewer for a network image (Supabase signed URL).
-Future<void> showNetworkImageViewer(BuildContext context, String url, {Object? heroTag}) {
+/// Pass the storage path as [cacheKey] so the thumbnail's cached copy is reused.
+Future<void> showNetworkImageViewer(
+  BuildContext context,
+  String url, {
+  Object? heroTag,
+  String? cacheKey,
+}) {
   final image = CachedNetworkImage(
     imageUrl: url,
+    cacheKey: cacheKey,
     fit: BoxFit.contain,
     placeholder: (_, _) => const CircularProgressIndicator(color: Colors.white54),
     errorWidget: (_, _, _) =>

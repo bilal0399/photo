@@ -1,12 +1,13 @@
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/scanner/document_scanner.dart';
 import '../model/document.dart';
 
 /// Storage folder holding attachments that already went through the scanner.
@@ -66,13 +67,40 @@ class SupabaseDocumentsService implements DocumentsService {
         updatedAt: r['updated_at'] as String?,
       );
 
+  /// Uploads an attachment and returns its storage path.
+  ///
+  /// Images are always stored cropped and enhanced: the form hands over the
+  /// scanner's output, and any image that skipped the scanner is processed
+  /// here automatically. Scans go under [kScannedPrefix] so a bulk run never
+  /// processes them a second time.
   Future<String> _upload(String sourcePath) async {
-    final bytes = await File(sourcePath).readAsBytes();
-    final ext = p.extension(sourcePath).toLowerCase();
-    final object = 'documents/${DateTime.now().millisecondsSinceEpoch}'
+    var bytes = await File(sourcePath).readAsBytes();
+    var ext = p.extension(sourcePath).toLowerCase();
+    var folder = 'documents/';
+    if (isScannerOutput(sourcePath)) {
+      folder = kScannedPrefix;
+    } else if (isScannable(sourcePath)) {
+      final scan = await scanBytes(bytes);
+      if (scan != null) {
+        bytes = scan.output.bytes;
+        ext = scan.output.extension;
+        folder = kScannedPrefix;
+      }
+    }
+    final object = '$folder${DateTime.now().millisecondsSinceEpoch}'
         '${Random().nextInt(0xFFFFFF).toRadixString(16)}$ext';
     await _client.storage.from(_bucket).uploadBinary(object, bytes);
     return object;
+  }
+
+  /// Best-effort removal of a storage object that no record points at.
+  Future<void> _removeObject(String path) async {
+    if (path.isEmpty) return;
+    try {
+      await _client.storage.from(_bucket).remove([path]);
+    } catch (e) {
+      debugPrint('Could not remove attachment $path: $e');
+    }
   }
 
   Map<String, dynamic> _payload(DocumentDraft d, String attachment, String? approval) => {
@@ -100,22 +128,35 @@ class SupabaseDocumentsService implements DocumentsService {
       attachment = await _upload(sourceAttachmentPath);
     }
     final approval = draft.status == kApprovedStatus ? _today() : null;
-    await _client.from('documents').insert({
-      'document_code': _generateCode(),
-      ..._payload(draft, attachment, approval),
-    });
+    try {
+      await _client.from('documents').insert({
+        'document_code': _generateCode(),
+        ..._payload(draft, attachment, approval),
+      });
+    } catch (_) {
+      await _removeObject(attachment); // don't leave an orphaned upload behind
+      rethrow;
+    }
   }
 
   @override
   Future<void> edit(Document doc, DocumentDraft draft, {String? newSourceAttachmentPath}) async {
-    var attachment = doc.attachmentPath;
+    final previous = doc.attachmentPath;
+    var attachment = previous;
     if (newSourceAttachmentPath != null && newSourceAttachmentPath.isNotEmpty) {
       attachment = await _upload(newSourceAttachmentPath);
     }
     final approval = draft.status == kApprovedStatus
         ? (doc.approvalDate.isNotEmpty ? doc.approvalDate : _today())
         : null;
-    await _client.from('documents').update(_payload(draft, attachment, approval)).eq('id', doc.id!);
+    try {
+      await _client.from('documents').update(_payload(draft, attachment, approval)).eq('id', doc.id!);
+    } catch (_) {
+      if (attachment != previous) await _removeObject(attachment);
+      rethrow;
+    }
+    // Only drop the old object once the record points at the new one.
+    if (attachment != previous) await _removeObject(previous);
   }
 
   @override
@@ -129,22 +170,14 @@ class SupabaseDocumentsService implements DocumentsService {
     // Only drop the old object once the record points at the new one.
     await _client.from('documents').update({'attachment_path': object}).eq('id', doc.id!);
     final previous = doc.attachmentPath;
-    if (deleteOriginal && previous.isNotEmpty && previous != object) {
-      try {
-        await _client.storage.from(_bucket).remove([previous]);
-      } catch (_) {}
-    }
+    if (deleteOriginal && previous != object) await _removeObject(previous);
     return object;
   }
 
   @override
   Future<void> remove(Document doc, {required bool deleteFile}) async {
     await _client.from('documents').delete().eq('id', doc.id!);
-    if (deleteFile && doc.attachmentPath.isNotEmpty) {
-      try {
-        await _client.storage.from(_bucket).remove([doc.attachmentPath]);
-      } catch (_) {}
-    }
+    if (deleteFile) await _removeObject(doc.attachmentPath);
   }
 
   @override
@@ -181,12 +214,16 @@ class CachedDocumentsService implements DocumentsService {
     try {
       final docs = await remote.all();
       final db = await _db.database;
-      await db.delete('documents');
-      final batch = db.batch();
-      for (final d in docs) {
-        batch.insert('documents', d.toCache());
-      }
-      await batch.commit(noResult: true);
+      // One transaction: a failure mid-way keeps the previous cache intact
+      // instead of leaving it empty.
+      await db.transaction((txn) async {
+        await txn.delete('documents');
+        final batch = txn.batch();
+        for (final d in docs) {
+          batch.insert('documents', d.toCache());
+        }
+        await batch.commit(noResult: true);
+      });
       return docs;
     } catch (_) {
       final db = await _db.database;

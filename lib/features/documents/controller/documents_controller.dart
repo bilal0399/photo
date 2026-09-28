@@ -65,7 +65,9 @@ class DocumentsController {
   DocumentsService get _service => ref.read(documentsServiceProvider);
 
   Future<String> nextBookNumber() async {
-    final docs = ref.read(documentsProvider).valueOrNull ?? await _service.all();
+    // Await the provider: right after a save it is refreshing, and its
+    // previous value would hand out the number that was just used.
+    final docs = await ref.read(documentsProvider.future);
     var max = 0;
     for (final d in docs) {
       final n = int.tryParse(d.bookNumber);
