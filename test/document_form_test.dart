@@ -116,6 +116,26 @@ String _fieldText(WidgetTester tester, String label) => tester
 String _lookupText(WidgetTester tester, String label) =>
     tester.widget<TextField>(_lookupField(label)).controller!.text;
 
+Document _existing({
+  required String bookNumber,
+  required String requester,
+  String direction = kOutgoing,
+}) =>
+    Document(
+      id: bookNumber,
+      documentCode: 'D-$bookNumber',
+      bookNumber: bookNumber,
+      datetime: '${DateTime.now().year}-01-10',
+      bookType: 'كتاب رسمي',
+      requester: requester,
+      status: 'قيد المراجعة',
+      direction: direction,
+      summary: 'كتاب سابق',
+      attachmentPath: '',
+      approvalDate: '',
+      createdAt: '',
+    );
+
 /// Fills everything a new document needs besides the date.
 Future<void> _fillRequired(WidgetTester tester, {String summary = 'نص'}) async {
   await _selectLookup(tester, 'نوع الكتاب', 'كتاب رسمي');
@@ -218,18 +238,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(docs.saved, hasLength(1));
-    expect(docs.saved.single.bookNumber, '1');
+    // The party filled in is الوزارة, so the number runs in the M series.
+    expect(docs.saved.single.bookNumber, 'M-1');
     // Still on the form, ready for the next document.
     expect(find.text('إضافة طلب جديد'), findsOneWidget);
     expect(_fieldText(tester, 'ملخص الكتاب'), isEmpty);
-    expect(_fieldText(tester, 'رقم الكتاب'), '2');
+    expect(_fieldText(tester, 'رقم الكتاب'), 'M-2');
     expect(_lookupText(tester, 'نوع الكتاب'), 'كتاب رسمي');
     expect(_lookupText(tester, 'الجهة المستقبلة'), kDefaultRecipients.first);
 
     await tester.enterText(find.widgetWithText(TextFormField, 'ملخص الكتاب'), 'الثاني');
     await tester.tap(find.text('حفظ الطلب'));
     await tester.pumpAndSettle();
-    expect(docs.saved.map((d) => d.bookNumber), ['1', '2']);
+    expect(docs.saved.map((d) => d.bookNumber), ['M-1', 'M-2']);
+  });
+
+  testWidgets('the party is asked before the number', (tester) async {
+    await _openForm(tester, _FakeDocuments());
+
+    final party = tester.getTopLeft(_lookupField('الجهة المستقبلة')).dy;
+    final number = tester.getTopLeft(find.widgetWithText(TextFormField, 'رقم الكتاب')).dy;
+    expect(party, lessThan(number));
+  });
+
+  testWidgets('books to the ministry are numbered in their own M series', (tester) async {
+    final docs = _FakeDocuments([
+      _existing(bookNumber: 'M-12', requester: 'الوزارة'),
+      _existing(bookNumber: '40', requester: 'قيادة الفيلق'),
+    ]);
+    await _openForm(tester, docs);
+
+    await _selectLookup(tester, 'الجهة المستقبلة', 'الوزارة');
+    expect(_fieldText(tester, 'رقم الكتاب'), 'M-13');
+
+    // Another party carries on with the ordinary numbers.
+    await _selectLookup(tester, 'الجهة المستقبلة', 'قيادة الفيلق');
+    expect(_fieldText(tester, 'رقم الكتاب'), '41');
+
+    // An incoming book never carries the prefix, whatever the party.
+    await _selectLookup(tester, 'الجهة المستقبلة', 'الوزارة');
+    expect(_fieldText(tester, 'رقم الكتاب'), 'M-13');
+    await _pickOption(tester, kOutgoing, kIncoming);
+    expect(_fieldText(tester, 'رقم الكتاب'), '41');
+  });
+
+  testWidgets('a number typed by hand survives a change of party', (tester) async {
+    await _openForm(tester, _FakeDocuments([_existing(bookNumber: 'M-12', requester: 'الوزارة')]));
+
+    await tester.enterText(find.widgetWithText(TextFormField, 'رقم الكتاب'), '99');
+    await _selectLookup(tester, 'الجهة المستقبلة', 'الوزارة');
+    await tester.pumpAndSettle();
+
+    expect(_fieldText(tester, 'رقم الكتاب'), '99');
   });
 
   testWidgets('a book number already used that year asks before saving', (tester) async {

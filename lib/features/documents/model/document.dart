@@ -15,6 +15,37 @@ const kDefaultRecipients = ['الوزارة', 'قيادة الفيلق'];
 String entityLabel(String direction) =>
     direction == kOutgoing ? 'الجهة المستقبلة' : 'الجهة المقدمة';
 
+/// Parties whose outgoing books carry their own numbering series, keyed by the
+/// prefix put in front of the number (الوزارة -> M-1, M-2, …). Add a party here
+/// to give it a series of its own.
+const kNumberPrefixes = {'الوزارة': 'M-'};
+
+/// The prefix an outgoing book to [party] is numbered with, or '' for the
+/// ordinary series. Incoming books never carry one.
+String numberPrefixFor({required String direction, String? party}) =>
+    direction == kOutgoing ? (kNumberPrefixes[(party ?? '').trim()] ?? '') : '';
+
+/// The number of [bookNumber] within [prefix]'s series, or null when it belongs
+/// to another series. 'M-13' counts in the M series only; '13' only in the
+/// ordinary one.
+int? seriesNumber(String bookNumber, String prefix) {
+  final value = bookNumber.trim();
+  if (prefix.isEmpty) return int.tryParse(value);
+  if (!value.startsWith(prefix)) return null;
+  return int.tryParse(value.substring(prefix.length));
+}
+
+final _numberPattern = RegExp(r'^([A-Za-z]{1,3}-)?(\d+)$');
+
+/// Canonical form of a book number, used wherever numbers are matched or
+/// sorted: series prefix in capitals plus the number without leading zeros, so
+/// 'm-007' and 'M-7' are one and the same book. Null when it is not a number.
+String? numberKey(String bookNumber) {
+  final match = _numberPattern.firstMatch(bookNumber.trim());
+  if (match == null) return null;
+  return '${(match.group(1) ?? '').toUpperCase()}${int.parse(match.group(2)!)}';
+}
+
 const _imageExt = {'.png', '.jpg', '.jpeg'};
 
 class Document {

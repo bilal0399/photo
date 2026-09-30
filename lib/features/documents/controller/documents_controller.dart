@@ -64,16 +64,17 @@ class DocumentsController {
 
   DocumentsService get _service => ref.read(documentsServiceProvider);
 
-  Future<String> nextBookNumber() async {
+  /// Next free number in [prefix]'s series ('' for the ordinary one).
+  Future<String> nextBookNumber({String prefix = ''}) async {
     // Await the provider: right after a save it is refreshing, and its
     // previous value would hand out the number that was just used.
     final docs = await ref.read(documentsProvider.future);
     var max = 0;
     for (final d in docs) {
-      final n = int.tryParse(d.bookNumber);
+      final n = seriesNumber(d.bookNumber, prefix);
       if (n != null && n > max) max = n;
     }
-    return '${max + 1}';
+    return '$prefix${max + 1}';
   }
 
   Future<void> create(DocumentDraft draft, {String? sourceAttachmentPath}) async {

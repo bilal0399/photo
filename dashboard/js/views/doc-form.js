@@ -28,7 +28,10 @@
     const image = { file: null, result: null, filter: 'auto', crop: true, turns: 0, busy: false, token: 0 };
 
     // ---------------------------------------------------------------- fields
-    const number = h('input', { class: 'input num', id: 'f-number', inputmode: 'numeric', value: (doc && doc.book_number) || Api.nextBookNumber() });
+    // The number this form filled in by itself. While the field still holds it,
+    // switching the party is free to renumber; a number typed by hand is kept.
+    let suggestedNumber = '';
+    const number = h('input', { class: 'input num', id: 'f-number', value: (doc && doc.book_number) || '' });
     const yearSel = h('select', { class: 'select', id: 'f-year' });
     const years = new Set([String(now.getFullYear() - 1), String(now.getFullYear()), String(now.getFullYear() + 1), year]);
     [...years].sort().forEach((y) => yearSel.append(h('option', { value: y, selected: y === year }, y)));
@@ -61,7 +64,19 @@
       value: (doc && doc.requester) || (memory.direction === direction ? memory.party : '') || '',
       options: Api.optionValues(partyCategory()),
       onCreate: (v) => addToList(partyCategory())(v),
+      onChange: () => { suggestNumber(); renderNumberHelp(); },
     });
+
+    const numberPrefix = () => Api.numberPrefixFor(direction, partyBox.value);
+
+    /** Puts the next free number of the current series in the field. */
+    function suggestNumber() {
+      if (isEdit) return;
+      const current = number.value.trim();
+      if (current && current !== suggestedNumber) return;
+      suggestedNumber = Api.nextBookNumber(numberPrefix());
+      number.value = suggestedNumber;
+    }
     const statusBox = combobox({
       id: 'f-status',
       value: (doc && doc.status) || Api.DEFAULT_STATUS,
@@ -86,6 +101,9 @@
             if (partyBox.typed && !partyBox.value) partyBox.value = '';
             if (partyBox.value && !Api.optionValues(partyCategory()).includes(partyBox.value)) partyBox.value = '';
             renderSeg();
+            // An incoming book never carries a prefix, whatever the party was.
+            suggestNumber();
+            renderNumberHelp();
           },
         }, d));
       }
@@ -98,17 +116,31 @@
       control,
       help ? h('div', { class: 'help' }, help) : null);
 
+    // The party sits before the number: it decides the series the number
+    // belongs to (الوزارة -> M-13).
+    const numberHelp = h('div', { class: 'help' });
+    const numberField = h('div', { class: 'field span-4' },
+      h('label', { for: 'f-number' }, 'رقم الكتاب'), number, numberHelp);
+    const renderNumberHelp = () => {
+      const prefix = numberPrefix();
+      numberHelp.textContent = prefix
+        ? `كتب ${partyBox.value} لها تسلسل خاص ببادئة ${prefix}`
+        : '';
+    };
+    suggestNumber();
+    renderNumberHelp();
+
     const formCard = h('div', { class: 'card' },
       h('div', { class: 'form-grid' },
         h('div', { class: 'field span-12' }, h('div', { class: 'label' }, 'نوع الحركة'), seg),
-        field('رقم الكتاب', number, 'span-4'),
+        field(partyLabel, partyBox.el, 'span-8'),
+        numberField,
         field('السنة', yearSel, 'span-3'),
         field('الشهر', monthSel, 'span-3'),
         field('اليوم', dayInput, 'span-2'),
+        h('div', { class: 'span-4' }),
         field('نوع الكتاب', typeBox.el, 'span-6'),
-        field(partyLabel, partyBox.el, 'span-6'),
         field('حالة الكتاب', statusBox.el, 'span-6'),
-        h('div', { class: 'span-6' }),
         field('ملخص الكتاب', summary, 'span-12'),
         h('div', { class: 'span-12' }, errors)));
 
@@ -260,7 +292,11 @@
       const days = new Date(parseInt(yearSel.value, 10), parseInt(monthSel.value, 10), 0).getDate();
       dayInput.classList.toggle('invalid', !(dayN >= 1 && dayN <= days));
       if (!(dayN >= 1 && dayN <= days)) problems.push(`اليوم من 1 إلى ${days}`);
-      if (number.value.trim() && !/^\d+$/.test(number.value.trim())) problems.push('رقم الكتاب أرقام فقط');
+      const typedNumber = number.value.trim();
+      const prefix = numberPrefix();
+      if (typedNumber && Api.seriesNumber(typedNumber, '') === null && Api.seriesNumber(typedNumber, prefix) === null) {
+        problems.push(prefix ? `رقم الكتاب: أرقام، أو ${prefix} متبوعة بأرقام` : 'رقم الكتاب أرقام فقط');
+      }
       typeBox.invalid(!typeBox.value);
       if (!typeBox.value) problems.push('اختر نوع الكتاب من القائمة');
       partyBox.invalid(!partyBox.value);
@@ -319,7 +355,9 @@
     /** Ready for the next document: keep date, direction, type and party. */
     function reset() {
       summary.value = '';
-      number.value = Api.nextBookNumber();
+      // The party is kept for the next entry, so the series is kept with it.
+      number.value = '';
+      suggestNumber();
       statusBox.value = Api.DEFAULT_STATUS;
       clearImage();
       errors.textContent = '';

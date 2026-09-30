@@ -22,6 +22,8 @@
   const OUTGOING = 'صادر';
   const INCOMING = 'وارد';
   const DEFAULT_RECIPIENTS = ['الوزارة', 'قيادة الفيلق'];
+  // Parties whose outgoing books are numbered in their own series (الوزارة -> M-13).
+  const NUMBER_PREFIXES = { 'الوزارة': 'M-' };
 
   /** Lookup list categories, with the document column each one fills. */
   const CATEGORIES = [
@@ -92,13 +94,27 @@
     return state.documents;
   }
 
-  function nextBookNumber() {
+  /** The prefix an outgoing book to `party` is numbered with, '' for the ordinary series. */
+  function numberPrefixFor(direction, party) {
+    return direction === OUTGOING ? (NUMBER_PREFIXES[String(party || '').trim()] || '') : '';
+  }
+
+  /** The number of `bookNumber` inside `prefix`'s series, or null when it belongs to another. */
+  function seriesNumber(bookNumber, prefix) {
+    const value = String(bookNumber || '').trim();
+    const rest = prefix ? (value.startsWith(prefix) ? value.slice(prefix.length) : null) : value;
+    if (rest === null || !/^\d+$/.test(rest)) return null;
+    return parseInt(rest, 10);
+  }
+
+  /** Next free number in `prefix`'s series ('' for the ordinary one). */
+  function nextBookNumber(prefix = '') {
     let max = 0;
     for (const d of state.documents || []) {
-      const n = parseInt(d.book_number, 10);
-      if (!Number.isNaN(n) && n > max) max = n;
+      const n = seriesNumber(d.book_number, prefix);
+      if (n !== null && n > max) max = n;
     }
-    return String(max + 1);
+    return `${prefix}${max + 1}`;
   }
 
   function generateCode() {
@@ -340,7 +356,8 @@
     client, state, CATEGORIES, APPROVED, DEFAULT_STATUS, OUTGOING, INCOMING, DOC_BUCKET, TASK_BUCKET,
     SCANNED_PREFIX, extOf, isImagePath,
     signIn, signOut, currentSession, profile,
-    documents, nextBookNumber, createDocument, updateDocument, setAttachment, deleteDocument,
+    documents, nextBookNumber, numberPrefixFor, seriesNumber,
+    createDocument, updateDocument, setAttachment, deleteDocument,
     uploadAttachment, removeObject, signedUrl, download,
     tasks,
     allOptions, optionValues, addOption, renameOption, deleteOption, reorderOptions, usageCount,

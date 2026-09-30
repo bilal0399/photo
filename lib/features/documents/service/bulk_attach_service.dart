@@ -83,7 +83,8 @@ class BulkAttachService {
   static const _persianDigits = '۰۱۲۳۴۵۶۷۸۹';
 
   /// The book number a file name stands for, or null when it is not a number.
-  /// Arabic-Indic digits and leading zeros are accepted ("٠٠٧.jpg" is 7).
+  /// Arabic-Indic digits and leading zeros are accepted ("٠٠٧.jpg" is 7), and
+  /// so is a series prefix ("M-13.jpg" is the ministry book M-13).
   static String? numberFromName(String path) {
     final buffer = StringBuffer();
     for (final ch in p.basenameWithoutExtension(path).trim().split('')) {
@@ -91,8 +92,7 @@ class BulkAttachService {
       final persian = _persianDigits.indexOf(ch);
       buffer.write(arabic >= 0 ? '$arabic' : (persian >= 0 ? '$persian' : ch));
     }
-    final value = int.tryParse(buffer.toString());
-    return value == null || value < 0 ? null : '$value';
+    return numberKey(buffer.toString());
   }
 
   /// Matches each file to a document. [year] (e.g. "2025") and [direction]
@@ -109,9 +109,9 @@ class BulkAttachService {
     for (final d in documents) {
       if (year != null && year.isNotEmpty && !d.datetime.startsWith(year)) continue;
       if (direction != null && direction.isNotEmpty && d.direction != direction) continue;
-      final n = int.tryParse(d.bookNumber.trim());
-      if (n == null) continue;
-      byNumber.putIfAbsent('$n', () => []).add(d);
+      final key = numberKey(d.bookNumber);
+      if (key == null) continue;
+      byNumber.putIfAbsent(key, () => []).add(d);
     }
 
     final claimed = <String>{};

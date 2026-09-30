@@ -19,12 +19,22 @@
   };
   const willUpload = (status) => status === 'ready' || status === 'replaces';
 
+  /**
+   * Canonical form of a book number: series prefix in capitals plus the number
+   * without leading zeros, so 'm-007' and 'M-7' are one and the same book.
+   */
+  function numberKey(raw) {
+    const m = /^([A-Za-z]{1,3}-)?(\d+)$/.exec(String(raw == null ? '' : raw).trim());
+    if (!m) return null;
+    return `${(m[1] || '').toUpperCase()}${parseInt(m[2], 10)}`;
+  }
+
+  /** Arabic-Indic digits, leading zeros and a series prefix are all accepted. */
   function numberFromName(name) {
     const base = String(name).split(/[\\/]/).pop().replace(/\.[^.]*$/, '').trim()
       .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
       .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)));
-    if (!/^\d+$/.test(base)) return null;
-    return String(parseInt(base, 10));
+    return numberKey(base);
   }
 
   /**
@@ -36,9 +46,8 @@
     for (const d of docs) {
       if (year && !String(d.doc_date || '').startsWith(year)) continue;
       if (direction && d.direction !== direction) continue;
-      const n = parseInt(String(d.book_number || '').trim(), 10);
-      if (Number.isNaN(n)) continue;
-      const key = String(n);
+      const key = numberKey(d.book_number);
+      if (key === null) continue;
       if (!byNumber.has(key)) byNumber.set(key, []);
       byNumber.get(key).push(d);
     }
@@ -61,7 +70,7 @@
     });
   }
 
-  const api = { EXTENSIONS, STATUS, willUpload, numberFromName, plan };
+  const api = { EXTENSIONS, STATUS, willUpload, numberFromName, numberKey, plan };
   root.BulkMatch = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof self !== 'undefined' ? self : globalThis);

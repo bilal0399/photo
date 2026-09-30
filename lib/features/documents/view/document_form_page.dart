@@ -45,6 +45,13 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
   bool _saving = false;
   bool _initialized = false;
 
+  /// The number this form filled in by itself. While the field still holds it,
+  /// changing the party is free to replace it; once the user types their own
+  /// number it is left alone.
+  String _suggestedNumber = '';
+
+  String get _numberPrefix => numberPrefixFor(direction: _direction, party: _requester);
+
   bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 
   @override
@@ -61,10 +68,24 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
       _status = doc.status;
       _direction = doc.direction.isNotEmpty ? doc.direction : kOutgoing;
     } else {
-      ref.read(documentsControllerProvider).nextBookNumber().then((n) {
-        if (mounted && _bookNumber.text.isEmpty) _bookNumber.text = n;
-      });
+      _suggestNumber();
     }
+  }
+
+  /// Fills the number field with the next free number of the current series,
+  /// unless the user already typed a number of their own.
+  Future<void> _suggestNumber() async {
+    final prefix = _numberPrefix;
+    final current = _bookNumber.text.trim();
+    if (current.isNotEmpty && current != _suggestedNumber) return;
+    final next = await ref.read(documentsControllerProvider).nextBookNumber(prefix: prefix);
+    if (!mounted) return;
+    final stillOurs = _bookNumber.text.trim().isEmpty || _bookNumber.text.trim() == _suggestedNumber;
+    if (!stillOurs || prefix != _numberPrefix) return;
+    setState(() {
+      _suggestedNumber = next;
+      _bookNumber.text = next;
+    });
   }
 
   DateTime _parseDate(String value) {
@@ -156,6 +177,15 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
       _direction = value ?? kOutgoing;
       if (_requester != null && !nextEntities.contains(_requester)) _requester = null;
     });
+    // The series follows the direction too: an incoming book never carries a
+    // prefix, whatever the party was.
+    if (!widget.isEdit) _suggestNumber();
+  }
+
+  /// Picking the party can move the book into another numbering series.
+  void _changeParty(String? value) {
+    setState(() => _requester = value);
+    if (!widget.isEdit) _suggestNumber();
   }
 
   Future<void> _pickAttachment() async {
@@ -253,8 +283,8 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
           _pickedAttachment = null;
           _saving = false;
         });
-        final next = await controller.nextBookNumber();
-        if (mounted && _bookNumber.text.isEmpty) _bookNumber.text = next;
+        // The party is kept for the next entry, so the series is kept with it.
+        await _suggestNumber();
         _summaryFocus.requestFocus();
       } else {
         Navigator.of(context).pop();
@@ -348,22 +378,8 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
                 _dropdown('نوع الحركة', _direction, kDirections,
                     (v) => _changeDirection(v, entitiesFor(v ?? kOutgoing))),
                 const SizedBox(height: 14),
-                TextFormField(
-                  controller: _bookNumber,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'رقم الكتاب'),
-                  validator: (v) {
-                    final t = (v ?? '').trim();
-                    if (t.isNotEmpty && int.tryParse(t) == null) return 'أرقام فقط';
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 14),
-                _dateFields(),
-                const SizedBox(height: 14),
-                _searchableDropdown(
-                    'نوع الكتاب', _bookType, bookTypes, (v) => setState(() => _bookType = v)),
-                const SizedBox(height: 14),
+                // The party comes before the number: it decides the series the
+                // number belongs to (الوزارة -> M-13).
                 _searchableDropdown(
                   entityLabel(_direction),
                   _requester,
@@ -373,8 +389,32 @@ class _DocumentFormPageState extends ConsumerState<DocumentFormPage> {
                     if (_requester != null && _requester!.isNotEmpty && !entities.contains(_requester))
                       _requester!,
                   ],
-                  (v) => setState(() => _requester = v),
+                  _changeParty,
                 ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _bookNumber,
+                  decoration: InputDecoration(
+                    labelText: 'رقم الكتاب',
+                    helperText: _numberPrefix.isEmpty
+                        ? null
+                        : 'كتب ${_requester ?? ''} لها تسلسل خاص ببادئة $_numberPrefix',
+                  ),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) return null;
+                    if (int.tryParse(t) != null) return null;
+                    if (seriesNumber(t, _numberPrefix) != null) return null;
+                    return _numberPrefix.isEmpty
+                        ? 'أرقام فقط'
+                        : 'أرقام، أو $_numberPrefix متبوعة بأرقام';
+                  },
+                ),
+                const SizedBox(height: 14),
+                _dateFields(),
+                const SizedBox(height: 14),
+                _searchableDropdown(
+                    'نوع الكتاب', _bookType, bookTypes, (v) => setState(() => _bookType = v)),
                 const SizedBox(height: 14),
                 _searchableDropdown('حالة الكتاب', statuses.contains(_status) ? _status : null,
                     statuses, (v) => setState(() => _status = v ?? _defaultStatus)),

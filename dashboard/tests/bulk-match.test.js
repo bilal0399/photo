@@ -45,3 +45,18 @@ test('year, direction and replace settle the rest', () => {
   assert.strictEqual(replace.status, 'replaces');
   assert.ok(M.willUpload(replace.status));
 });
+
+test('a prefixed series keeps its own numbers', () => {
+  assert.strictEqual(M.numberKey('M-13'), 'M-13');
+  assert.strictEqual(M.numberKey('m-007'), 'M-7');
+  assert.strictEqual(M.numberKey('13'), '13');
+  assert.strictEqual(M.numberKey('M13'), null);
+  assert.strictEqual(M.numberFromName('M-13.jpg'), 'M-13');
+
+  // 'M-13' and '13' are different books and must not match each other.
+  const docs = [doc('ministry', 'M-13'), doc('plain', '13')];
+  const items = M.plan([{ name: 'M-13.jpg' }, { name: '13.jpg' }], docs);
+  assert.deepStrictEqual(items.map((i) => i.status), ['ready', 'ready']);
+  assert.strictEqual(items[0].doc.id, 'ministry');
+  assert.strictEqual(items[1].doc.id, 'plain');
+});

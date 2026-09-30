@@ -241,7 +241,16 @@
       return list.sort((a, b) => {
         let x = a[key] || '';
         let y = b[key] || '';
-        if (key === 'book_number') { x = parseInt(x, 10) || 0; y = parseInt(y, 10) || 0; return (x - y) * dir; }
+        if (key === 'book_number') {
+          // A prefixed series ('M-13') sorts as its own block, not as zero.
+          const split = (v) => {
+            const m = /^(\D*)(\d+)$/.exec(String(v || '').trim());
+            return m ? [m[1].toUpperCase(), parseInt(m[2], 10)] : [String(v || ''), 0];
+          };
+          const [px, nx] = split(x);
+          const [py, ny] = split(y);
+          return (px === py ? nx - ny : px.localeCompare(py)) * dir;
+        }
         return String(x).localeCompare(String(y), 'ar') * dir;
       });
     }

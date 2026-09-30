@@ -59,7 +59,16 @@ class SortBar extends StatelessWidget {
   }
 }
 
-int _byNumber(String a, String b) => (int.tryParse(a) ?? 0).compareTo(int.tryParse(b) ?? 0);
+/// Numbers sort numerically, and a prefixed series ('M-13') sorts as its own
+/// block rather than collapsing to zero.
+int _byNumber(String a, String b) {
+  final prefixA = a.trim().replaceAll(RegExp(r'\d+$'), '');
+  final prefixB = b.trim().replaceAll(RegExp(r'\d+$'), '');
+  if (prefixA != prefixB) return prefixA.compareTo(prefixB);
+  final numberA = int.tryParse(a.trim().substring(prefixA.length)) ?? 0;
+  final numberB = int.tryParse(b.trim().substring(prefixB.length)) ?? 0;
+  return numberA.compareTo(numberB);
+}
 
 /// Sorts a copy of [items] by the chosen field/direction.
 List<T> applySort<T>(
